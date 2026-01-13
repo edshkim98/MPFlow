@@ -230,7 +230,7 @@ class ConditioningMethod(ABC):
         self.perceptual_loss = PerceptualLoss(device=device)
         self.tv = TotalVariationLoss()
         self.edge_ls = CannyEdgeLoss(low_threshold=0.05, high_threshold=0.1)
-        self.ssl_model = MultiModalSSL(feats=128, return_z=False, decoder=False)
+        self.ssl_model = MultiModalSSL(feats=128, return_z=True, decoder=False, dense=False)
         self.ssl_model.load_state_dict(torch.load('/cluster/project0/IQT_Nigeria/skim/ssl_mri/best_ssl_model_ps32_recon.pth'), strict=False)
         self.ssl_model = self.ssl_model.to(device).float()
         self.ssl_model.eval()
@@ -319,18 +319,73 @@ class ConditioningMethod(ABC):
                 
                 difference = measurement - pred_measurement
                 norm = torch.linalg.norm(difference)
+                # 2. Calculate the norm PER SAMPLE (dim=1, 2, 3)
+                # Reshape to [B, -1] makes it easy to take the norm across all non-batch dims
+                #per_sample_loss = torch.linalg.norm(difference.view(difference.shape[0], -1), dim=1)
+
+                # 3. Sum the losses (Do NOT average)
+                # Summing ensures d(L1 + L2)/dx1 = dL1/dx1. 
+                # The denominator for Patient A's gradient will now only involve Patient A's norm.
+                #norm = torch.sum(per_sample_loss)
                 # edge_ls = self.edge_ls(measurement, pred_measurement)
                 #tv = self.tv(pred_measurement)
-                # ssim = self.ssim(pred_measurement.type(torch.DoubleTensor), measurement.type(torch.DoubleTensor))
-                if multimodal is not None: # and (t > 50):
+                # # ssim = self.ssim(pred_measurement.type(torch.DoubleTensor), measurement.type(torch.DoubleTensor))
+                # if (multimodal is not None) and (x_0_hat.shape[0] == 1):
+                #     ps = 32
+                #     #copy multimodal for same batch size as x_0_hat
+                #     if x_0_hat.shape[0] != multimodal.shape[0]:
+                #         multimodal = multimodal.repeat(x_0_hat.shape[0], 1, 1, 1)
+                #     multimodal_patches = multimodal.unfold(2, ps, ps).unfold(3, ps, ps)
+                #     multimodal_patches = multimodal_patches.contiguous().view(-1, 1, ps, ps)
+                #     x_0_hat_patches = x_0_hat.unfold(2, ps, ps).unfold(3, ps, ps)
+                #     x_0_hat_patches = x_0_hat_patches.contiguous().view(-1, 1, ps, ps)
+                #     (emb1, _) , (emb2, _) = self.ssl_model(multimodal_patches.to(device).float(), x_0_hat_patches.float())
+                #     #ssl_ls_glob = torch.mean((emb1_glob - emb2_glob)**2)
+                #     #ssl_ls_loc = torch.mean((emb1_loc - emb2_loc)**2)
+                #     ssl_ls = torch.mean((emb1 - emb2)**2)
+                #     #ssl_ls = torch.linalg.norm(ssl_ls)
+                #     # 1. Square the differences
+                #     #diff = emb1 - emb2
+                #     #squared_diff = (diff)**2 
+                #     # 2. Mean across pixels/channels only (dim 1, 2, 3)
+                #     # This gives you a [Batch] sized vector of MSEs
+                #     #per_sample_mse = squared_diff.view(diff.shape[0], -1).mean(dim=1)
+                #     # 3. SUM the per-sample MSEs
+                #     # This ensures that d(Total)/d(x_1) = d(MSE_1)/d(x_1)
+                #     #ssl_ls = torch.sum(per_sample_mse)
+                if multimodal is not None:
                     ps = 32
-                    multimodal_patches = multimodal.unfold(2, ps, ps).unfold(3, ps, ps)
-                    multimodal_patches = multimodal_patches.contiguous().view(-1, 1, ps, ps)
+                    if x_0_hat.shape[0] != multimodal.shape[0]:
+                        multimodal = multimodal.repeat(x_0_hat.shape[0], 1, 1, 1)
+                        
+                    # 1. Unfold to [B, C, Num_Patches_H, Num_Patches_W, ps, ps]
                     x_0_hat_patches = x_0_hat.unfold(2, ps, ps).unfold(3, ps, ps)
-                    x_0_hat_patches = x_0_hat_patches.contiguous().view(-1, 1, ps, ps)
-                    (emb1, _) , (emb2, _) = self.ssl_model(multimodal_patches.to(device).float(), x_0_hat_patches.float())
-                    ssl_ls = torch.mean((emb1 - emb2)**2)
-                    #ssl_ls = torch.linalg.norm(ssl_ls)
+                    B, C, nH, nW, ph, pw = x_0_hat_patches.shape
+
+                    # 2. Reshape to [B * nH * nW, C, ps, ps] 
+                    # BUT we must handle the model carefully
+                    flat_patches = x_0_hat_patches.contiguous().view(-1, C, ph, pw)
+
+                    multimodal_patches = multimodal.unfold(2, ps, ps).unfold(3, ps, ps)
+                    # Assume multimodal has same batch size B
+                    multimodal_patches = multimodal_patches.contiguous().view(-1, 1, ps, ps)
+
+                    # 3. IMPORTANT: Set model to EVAL mode to freeze BatchNormalization
+                    self.ssl_model.eval() 
+
+                    with torch.set_grad_enabled(True): # Ensure gradients still flow
+                        (emb1, _) , (emb2, _) = self.ssl_model(multimodal_patches.to(device).float(), flat_patches.float())
+
+                    # 4. Reshape embeddings back to [B, Num_Total_Patches, Dim]
+                    # This separates the patients again
+                    emb1 = emb1.view(B, -1, emb1.shape[-1]) 
+                    emb2 = emb2.view(B, -1, emb2.shape[-1])
+
+                    # 5. Independent Loss Calculation
+                    diff = emb1 - emb2
+                    # MSE per patient (mean over patches and embedding dims, then sum over patients)
+                    per_patient_mse = (diff**2).mean(dim=(1, 2)) 
+                    ssl_ls = torch.sum(per_patient_mse)
                 else:
                     ssl_ls = 0.0
 

@@ -1225,7 +1225,7 @@ class GaussianDiffusion:
                 # [FIX] Prepare time batch based on CURRENT img batch size
                 # This handles the switch from 100 -> 1 smoothly
                 current_batch = img.shape[0]
-                assert current_batch == 1, f"current batch size is not 1 but {current_batch}"
+                #assert current_batch == 1, f"current batch size is not 1 but {current_batch}"
                 t_batch = th.tensor([t_curr] * current_batch, device=device, dtype=th.float32)
                 t_input = t_batch * 1000.0 if self.rescale_timesteps else t_batch
                 

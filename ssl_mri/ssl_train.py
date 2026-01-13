@@ -21,6 +21,117 @@ import torchvision.transforms.functional as TF
 
 class MultiModalMRISSLTransform:
     """
+    Optimized for MPFlow (DPS-style Flow Matching):
+    - Conservative shared geometry to maintain spatial equivariance and latent precision.
+    - Aggressive, independent intensity jitter to force contrast-invariant structural learning.
+    """
+    def __init__(self,
+                 # Tighter geometric ranges to avoid interpolation-induced blurring
+                 max_rotation=3.0,        # Reduced from 10 to preserve grid alignment
+                 max_translate=0.02,      # Reduced from 0.1 to keep patches centered
+                 scale_range=(0.98, 1.02), # Tighter scale for sub-pixel precision
+                 
+                 blur_prob=0.2,           # Lower probability
+                 blur_sigma_range=(0.1, 0.5), # Light blur only to keep edges sharp
+                 
+                 dsus_prob=0.2,           # Lower probability for SR tasks
+                 ds_factor_range=(1, 2),  # Minimal downsampling
+                 
+                 gamma_prob=0.8,          # High probability for contrast invariance
+                 gamma_range=(0.5, 1.5),  # Wider range for style-agnosticism
+                 
+                 noise_prob=0.5,
+                 noise_std=0.01,          # Moderate noise for manifold smoothing
+                 
+                 sharp_prob=0.2,
+                 sharp_factor=1.2):
+        
+        self.max_rotation = max_rotation
+        self.max_translate = max_translate
+        self.scale_range = scale_range
+        self.blur_prob = blur_prob
+        self.blur_sigma_range = blur_sigma_range
+        self.dsus_prob = dsus_prob
+        self.ds_factor_range = ds_factor_range
+        self.gamma_prob = gamma_prob
+        self.gamma_range = gamma_range
+        self.noise_prob = noise_prob
+        self.noise_std = noise_std
+        self.sharp_prob = sharp_prob
+        self.sharp_factor = sharp_factor
+
+    def _shared_geom_and_res(self, img1, img2):
+        # Shared geometry is CRITICAL for DenseInfoNCE spatial correspondence
+        _, H, W = img1.shape
+
+        # --- shared affine ---
+        angle = random.uniform(-self.max_rotation, self.max_rotation)
+        tx = random.uniform(-self.max_translate * W, self.max_translate * W)
+        ty = random.uniform(-self.max_translate * H, self.max_translate * H)
+        scale = random.uniform(*self.scale_range)
+
+        def apply_affine(img):
+            return TF.affine(
+                img,
+                angle=angle,
+                translate=[tx, ty],
+                scale=scale,
+                shear=[0.0, 0.0],
+                interpolation=T.InterpolationMode.BILINEAR # Best trade-off for small angles
+            )
+
+        img1 = apply_affine(img1)
+        img2 = apply_affine(img2)
+
+        # --- shared downsample / upsample ---
+        if random.random() < self.dsus_prob:
+            factor = random.randint(self.ds_factor_range[0], self.ds_factor_range[1])
+            new_size = (H // factor, W // factor)
+            img1 = T.Resize(new_size, antialias=True)(img1)
+            img1 = T.Resize((H, W), antialias=True)(img1)
+            img2 = T.Resize(new_size, antialias=True)(img2)
+            img2 = T.Resize((H, W), antialias=True)(img2)
+
+        # --- shared blur ---
+        if random.random() < self.blur_prob:
+            sigma = random.uniform(*self.blur_sigma_range)
+            blur = T.GaussianBlur(kernel_size=5, sigma=sigma)
+            img1 = blur(img1)
+            img2 = blur(img2)
+
+        return img1, img2
+
+    def _intensity_jitter(self, img):
+        # INDEPENDENT intensity transforms force the encoders to ignore "shortcuts"
+        
+        # 1. Aggressive Gamma (Contrast Invariance)
+        if random.random() < self.gamma_prob:
+            gamma = random.uniform(*self.gamma_range)
+            img = torch.clamp(img, 1e-6, 1.0) ** gamma
+
+        # 2. Random Sharpness
+        if random.random() < self.sharp_prob:
+            # Note: T.RandomAdjustSharpness is p-driven; we apply it directly here
+            img = TF.adjust_sharpness(img, self.sharp_factor)
+
+        # 3. Additive Noise (Robustness to measurement noise)
+        if random.random() < self.noise_prob:
+            img = img + torch.randn_like(img) * self.noise_std
+
+        return torch.clamp(img, 0.0, 1.0)
+
+    def __call__(self, img_t1, img_t2):
+        # Step 1: Shared geometry ensures anatomical landmarks are in the same relative pixel locations
+        img_t1, img_t2 = self._shared_geom_and_res(img_t1, img_t2)
+
+        # Step 2: Independent intensity ensures encoders learn "Structure" rather than "Pixel Values"
+        img_t1 = self._intensity_jitter(img_t1)
+        img_t2 = self._intensity_jitter(img_t2)
+
+        return img_t1, img_t2
+
+class MultiModalMRISSLTransform_OLD:
+    """
     Option A:
     - Shared geometry / resolution / blur for T1 & T2
     - Modality-specific intensity jitter (gamma, noise, sharpness)
@@ -143,19 +254,32 @@ class IQTDataset(Dataset):
         self.transform = MultiModalMRISSLTransform() if transform is not None else None
         if (self.patch is True) and (transform is not None):
             self.transform = MultiModalMRISSLTransform(
-                             max_rotation=15,
-                             max_translate=0.1,     # as fraction of H,W
-                             scale_range=(0.9, 1.1),
-                             blur_prob=0.5,
-                             blur_sigma_range=(0.1, 2.0),
-                             dsus_prob=0.5,
-                             ds_factor_range=(1,2),
-                             gamma_prob=0.5,
-                             gamma_range=(0.8, 1.2),
-                             noise_prob=0.5,
-                             noise_std=0.005,
-                             sharp_prob=0.25,
-                             sharp_factor=1.1)
+                 max_rotation=3.0,        # Reduced from 10 to preserve grid alignment
+                 max_translate=0.02,      # Reduced from 0.1 to keep patches centered
+                 scale_range=(0.98, 1.02), # Tighter scale for sub-pixel precision
+                 blur_prob=0.2,           # Lower probability
+                 blur_sigma_range=(0.1, 0.5), # Light blur only to keep edges sharp
+                 dsus_prob=0.2,           # Lower probability for SR tasks
+                 ds_factor_range=(1, 2),  # Minimal downsampling
+                 gamma_prob=0.8,          # High probability for contrast invariance
+                 gamma_range=(0.5, 1.5),  # Wider range for style-agnosticism
+                 noise_prob=0.5,
+                 noise_std=0.005,          # Moderate noise for manifold smoothing
+                 sharp_prob=0.2,
+                 sharp_factor=1.2)
+                             #max_rotation=5,
+                             #max_translate=0.01,     # as fraction of H,W
+                             #scale_range=(0.9, 1.1),
+                             #blur_prob=0.5,
+                             #blur_sigma_range=(0.1, 1.0),
+                             #dsus_prob=0.5,
+                             #ds_factor_range=(1,2),
+                             #gamma_prob=0.5,
+                             #gamma_range=(0.8, 1.2),
+                             #noise_prob=0.5,
+                             #noise_std=0.005,
+                             #sharp_prob=0.25,
+                             #sharp_factor=1.1)
         self.lst = []
         for file in self.files:
             img_t1 = nib.load(file).get_fdata()
@@ -543,7 +667,7 @@ def train_ssl_epoch(model, train_dataloader, test_dataloader, optimizer, device,
             loss_nce = info_nce_multimodal([z_t1, z_t2], temperature=temperature)
             loss_rec = F.l1_loss(xhat_t1, img_t1) + F.l1_loss(xhat_t2, img_t2)
 
-        loss = loss_nce + lambda_rec * loss_rec
+            loss = loss_nce + lambda_rec * loss_rec
         loss.backward()
         optimizer.step()
 
@@ -556,13 +680,45 @@ def train_ssl_epoch(model, train_dataloader, test_dataloader, optimizer, device,
             img_t1 = img_t1.to(device=device, dtype=torch.float32)
             img_t2 = img_t2.to(device=device, dtype=torch.float32)
 
-            (z_t1, xhat_t1) = model.enc_t1(img_t1)
-            (z_t2, xhat_t2) = model.enc_t2(img_t2)
+            # (z_t1, xhat_t1) = model.enc_t1(img_t1)
+            # (z_t2, xhat_t2) = model.enc_t2(img_t2)
 
-            loss_nce = info_nce_multimodal([z_t1, z_t2], temperature=temperature)
-            loss_rec = F.l1_loss(xhat_t1, img_t1) + F.l1_loss(xhat_t2, img_t2)
+            if dense:
+                # 1. Forward pass through independent encoders
+                (z_t1_global, z_t1_dense, xhat_t1) = model.enc_t1(img_t1)
+                (z_t2_global, z_t2_dense, xhat_t2) = model.enc_t2(img_t2)
 
-            total_loss += (loss_nce + lambda_rec * loss_rec).item()
+                # 2. Global Cross-Modal Alignment (Anatomical level)
+                # We use a symmetric loss: T1->T2 and T2->T1
+                loss_nce_global = (
+                    global_info_nce_loss(z_t1_global, z_t2_global, temperature) + 
+                    global_info_nce_loss(z_t2_global, z_t1_global, temperature)
+                ) / 2.0
+
+                # 3. Dense Cross-Modal Alignment (Texture/Structural level)
+                # Aligning the spatial grids of T1 and T2
+                loss_nce_dense = (
+                    dense_info_nce_loss(z_t1_dense, z_t2_dense, temperature) +
+                    dense_info_nce_loss(z_t2_dense, z_t1_dense, temperature)
+                ) / 2.0
+
+                # 4. Reconstruction Loss (Fidelity)
+                loss_rec = F.l1_loss(xhat_t1, img_t1) + F.l1_loss(xhat_t2, img_t2)
+
+                # 5. Total Multi-modal Loss
+                # lambda_dense is usually set to 1.0 or 0.5 depending on stability
+                loss = loss_nce_global + lambda_dense * loss_nce_dense + lambda_rec * loss_rec
+                total_loss += loss.item()
+            else:
+                (z_t1, xhat_t1) = model.enc_t1(img_t1)
+                (z_t2, xhat_t2) = model.enc_t2(img_t2)
+
+                loss_nce = info_nce_multimodal([z_t1, z_t2], temperature=temperature)
+                loss_rec = F.l1_loss(xhat_t1, img_t1) + F.l1_loss(xhat_t2, img_t2)
+
+                loss = loss_nce + lambda_rec * loss_rec
+                total_loss += loss.item()
+
     in_and_out['img_t2'] = [img_t2.cpu().numpy(), xhat_t2.cpu().numpy()]
 
     return total_loss / len(test_dataloader), in_and_out
@@ -604,7 +760,7 @@ if __name__ == "__main__":
         train_dataset = IQTDataset(
             files_t1=files,
             configs={'norm': 'zero2two', 'Data': {'mean_hr': 0.0, 'std_hr': 1.0}},
-            slice_idx=(80, 160, 2),
+            slice_idx=(90, 160, 2),
             return_id=False,
             transform=True,
             patch=True
@@ -613,7 +769,7 @@ if __name__ == "__main__":
         valid_dataset = IQTDataset(
             files_t1=files_test,
             configs={'norm': 'zero2two', 'Data': {'mean_hr': 0.0, 'std_hr': 1.0}},
-            slice_idx=(80, 160, 2),
+            slice_idx=(100, 150, 2),
             return_id=False,
             transform=None,
             patch=True
@@ -651,12 +807,12 @@ if __name__ == "__main__":
             print(f"Average SSL valid loss: {avg_loss}")
             if avg_loss < best_loss:
                 best_loss = avg_loss
-                torch.save(model.state_dict(), f"best_ssl_model_ps32_recon_{MODE}.pth")
+                torch.save(model.state_dict(), f"best_ssl_model_ps32_recon_{MODE}_geminitransform.pth")
                 print("Saved best model.")
                 early_stop = 20
                 # Save some output examples t2_out
                 input_img, pred_img = t2_out['img_t2']
-                np.savez_compressed(f"ssl_t2_recon_train_examples_{MODE}.npz", input=input_img, pred=pred_img)
+                np.savez_compressed(f"ssl_t2_recon_train_examples_{MODE}_gemini.npz", input=input_img, pred=pred_img)
             else:
                 early_stop -= 1
                 if early_stop == 0:
