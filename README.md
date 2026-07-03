@@ -15,8 +15,6 @@ Seunghoi Kim · Chen Jin · Henry F. J. Tregidgo · Matteo Figini · Daniel C. A
 
 ---
 
-> **Note** — This paper has been accepted to **MICCAI 2026** but the conference proceedings are not yet published. This repository is a research preview; the citation below points to the arXiv preprint and will be updated once the official proceedings are available.
-
 **MPFlow** is a **zero-shot** MRI reconstruction framework built on **rectified flow** (flow matching). Zero-shot reconstruction relies on generative priors, but a single-modality unconditional prior tends to *hallucinate* under severe ill-posedness. In real clinical workflows, complementary acquisitions (e.g. a high-quality structural scan) are routinely available — MPFlow brings that auxiliary modality in **at inference time, without retraining the generative prior**, to anchor anatomical fidelity and suppress hallucination.
 
 ## Table of Contents
