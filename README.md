@@ -2,7 +2,7 @@
 
 # MPFlow: Multi-Modal Posterior-Guided Flow Matching for Zero-Shot MRI Reconstruction
 
-**Accepted to MICCAI 2026 — to appear**
+**Accepted to MICCAI 2026**
 
 [![Paper](https://img.shields.io/badge/arXiv-2603.03710-b31b1b.svg)](https://arxiv.org/abs/2603.03710)
 [![Conference](https://img.shields.io/badge/MICCAI-2026-4b44ce.svg)](https://www.miccai.org/)
@@ -126,8 +126,6 @@ Inference is driven by a YAML config (e.g. `configs_kspace.yaml`) loaded by `ima
 ```
 
 ## Citation
-
-This work is accepted to MICCAI 2026 (proceedings forthcoming). For now, please cite the arXiv preprint:
 
 ```bibtex
 @InProceedings{KimSeu_MPFlow_MICCAI2026,
