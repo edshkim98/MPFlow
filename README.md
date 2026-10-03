@@ -130,12 +130,15 @@ Inference is driven by a YAML config (e.g. `configs_kspace.yaml`) loaded by `ima
 This work is accepted to MICCAI 2026 (proceedings forthcoming). For now, please cite the arXiv preprint:
 
 ```bibtex
-@article{kim2026mpflow,
-  title   = {MPFlow: Multi-modal Posterior-Guided Flow Matching for Zero-Shot MRI Reconstruction},
-  author  = {Kim, Seunghoi and Jin, Chen and Tregidgo, Henry F. J. and Figini, Matteo and Alexander, Daniel C.},
-  journal = {arXiv preprint arXiv:2603.03710},
-  year    = {2026},
-  note    = {To appear in MICCAI 2026}
+@InProceedings{KimSeu_MPFlow_MICCAI2026,
+        author = { Kim, Seunghoi AND Jin, Chen AND Tregidgo, Henry F. J. AND Figini, Matteo AND Alexander, Daniel C.},
+        title = { { MPFlow: Multi-modal Posterior-Guided Flow Matching for Zero-Shot MRI Reconstruction } },
+        booktitle = {Medical Image Computing and Computer Assisted Intervention -- MICCAI 2026},
+        year = {2026},
+        publisher = {Springer Nature Switzerland},
+        volume = {LNCS 16888},
+        month = {September},
+        page = {pending}
 }
 ```
 
